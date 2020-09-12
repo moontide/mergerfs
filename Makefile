@@ -61,6 +61,7 @@ SRC	    = $(wildcard src/*.cpp)
 OBJS        = $(SRC:src/%.cpp=build/%.o)
 DEPS        = $(SRC:src/%.cpp=build/%.d)
 MANPAGE     = mergerfs.1
+MANPAGE_zh_CN = mergerfs_zh_CN.1
 CXXFLAGS    ?= ${OPT_FLAGS}
 CXXFLAGS    := \
               ${CXXFLAGS} \
@@ -92,10 +93,12 @@ BINDIR        = $(EXEC_PREFIX)/bin
 SBINDIR       = $(EXEC_PREFIX)/sbin
 MANDIR        = $(DATAROOTDIR)/man
 MAN1DIR       = $(MANDIR)/man1
+MAN1DIR_zh_CN = $(MANDIR)/zh_CN/man1
 
-INSTALLBINDIR  = $(DESTDIR)$(BINDIR)
-INSTALLSBINDIR = $(DESTDIR)$(SBINDIR)
-INSTALLMAN1DIR = $(DESTDIR)$(MAN1DIR)
+INSTALLBINDIR        = $(DESTDIR)$(BINDIR)
+INSTALLSBINDIR       = $(DESTDIR)$(SBINDIR)
+INSTALLMAN1DIR       = $(DESTDIR)$(MAN1DIR)
+INSTALLMAN1DIR_zh_CN = $(DESTDIR)$(MAN1DIR_zh_CN)
 
 .PHONY: all
 all: mergerfs
@@ -158,6 +161,8 @@ install-mount-tools: install-base
 install-man: $(MANPAGE)
 	$(MKDIR) -p "$(INSTALLMAN1DIR)"
 	$(INSTALL) -v -m 0644 "man/$(MANPAGE)" "$(INSTALLMAN1DIR)/$(MANPAGE)"
+	$(MKDIR) -p "$(INSTALLMAN1DIR_zh_CN)"
+	$(INSTALL) -v -m 0644 "man/$(MANPAGE_zh_CN)" "$(INSTALLMAN1DIR_zh_CN)/$(MANPAGE)"
 
 install-strip: install-base
 	$(STRIP) "$(INSTALLBINDIR)/mergerfs"
@@ -173,10 +178,12 @@ uninstall-mount.mergerfs:
 
 uninstall-man:
 	$(RM) -f "$(INSTALLMAN1DIR)/$(MANPAGE)"
+	$(RM) -f "$(INSTALLMAN1DIR_zh_CN)/$(MANPAGE)"
 
-$(MANPAGE): README.md
+$(MANPAGE): README.md README_zh_CN.md
 ifneq ($(shell $(PANDOC) --version 2> /dev/null),)
 	$(PANDOC) -s -t man -o "man/$(MANPAGE)" README.md
+	$(PANDOC) -s -t man -o "man/$(MANPAGE_zh_CN)" README_zh_CN.md
 else
 	$(warning "pandoc does not appear available: unable to build manpage")
 endif
