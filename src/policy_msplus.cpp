@@ -42,7 +42,6 @@ namespace msplus
   {
     int rv;
     uint64_t lus;
-    string fusepath;
     fs::info_t info;
     const Branch *branch;
     const string *basepath;
@@ -55,7 +54,7 @@ namespace msplus
 
         if(branch->ro_or_nc())
           error_and_continue(*err_,EROFS);
-        if(!fs::exists(branch->path,fusepath))
+        if(!fs::exists(branch->path,fusepath_))
           error_and_continue(*err_,ENOENT);
         rv = fs::info(branch->path,&info);
         if(rv == -1)
@@ -86,15 +85,15 @@ namespace msplus
 
     error = ENOENT;
     fusepath = fusepath_;
-    do
+    for(;;)
       {
         basepath = msplus::create_1(branches_,fusepath,&error);
         if(basepath)
           break;
-
+        if(fusepath == "/")
+          break;
         fusepath = fs::path::dirname(fusepath);
       }
-    while(!fusepath.empty());
 
     if(basepath == NULL)
       return (errno=error,-1);
