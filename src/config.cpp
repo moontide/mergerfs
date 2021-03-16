@@ -20,14 +20,18 @@
 #include "from_string.hpp"
 #include "num.hpp"
 #include "rwlock.hpp"
+#include "str.hpp"
 #include "to_string.hpp"
 #include "version.hpp"
 
 #include <algorithm>
-#include <string>
+#include <cstdint>
+#include <fstream>
 #include <iostream>
+#include <string>
 
-#include <stdint.h>
+#include <pthread.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -36,6 +40,11 @@
 using std::string;
 
 #define IFERT(S) if(S == s_) return true
+
+const std::string CONTROLFILE = "/.mergerfs";
+
+Config Config::_singleton;
+
 
 namespace l
 {
@@ -60,49 +69,47 @@ namespace l
 }
 
 Config::Config()
-  :
-  open_cache(),
-
-  controlfile("/.mergerfs"),
-
-  async_read(true),
-  auto_cache(false),
-  branches(minfreespace),
-  cache_attr(1),
-  cache_entry(1),
-  cache_files(CacheFiles::ENUM::LIBFUSE),
-  cache_negative_entry(0),
-  cache_readdir(false),
-  cache_statfs(0),
-  cache_symlinks(false),
-  category(func),
-  direct_io(false),
-  dropcacheonclose(false),
-  fsname(),
-  func(),
-  fuse_msg_size(FUSE_MAX_MAX_PAGES),
-  ignorepponrename(false),
-  inodecalc("hybrid-hash"),
-  link_cow(false),
-  minfreespace(MINFREESPACE_DEFAULT),
-  mount(),
-  moveonenospc(false),
-  nfsopenhack(NFSOpenHack::ENUM::OFF),
-  nullrw(false),
-  pid(::getpid()),
-  posix_acl(false),
-  readdir(ReadDir::ENUM::POSIX),
-  readdirplus(false),
-  security_capability(true),
-  srcmounts(branches),
-  statfs(StatFS::ENUM::BASE),
-  statfs_ignore(StatFSIgnore::ENUM::NONE),
-  symlinkify(false),
-  symlinkify_timeout(3600),
-  threads(0),
-  version(MERGERFS_VERSION),
-  writeback_cache(false),
-  xattr(XAttr::ENUM::PASSTHROUGH)
+  : async_read(true),
+    auto_cache(false),
+    minfreespace(MINFREESPACE_DEFAULT),
+    branches(minfreespace),
+    cache_attr(1),
+    cache_entry(1),
+    cache_files(CacheFiles::ENUM::LIBFUSE),
+    cache_negative_entry(0),
+    cache_readdir(false),
+    cache_statfs(0),
+    cache_symlinks(false),
+    category(func),
+    direct_io(false),
+    dropcacheonclose(false),
+    fsname(),
+    follow_symlinks(FollowSymlinks::ENUM::NEVER),
+    func(),
+    fuse_msg_size(FUSE_MAX_MAX_PAGES),
+    ignorepponrename(false),
+    inodecalc("hybrid-hash"),
+    link_cow(false),
+    link_exdev(LinkEXDEV::ENUM::PASSTHROUGH),
+    mount(),
+    moveonenospc(false),
+    nfsopenhack(NFSOpenHack::ENUM::OFF),
+    nullrw(false),
+    pid(::getpid()),
+    posix_acl(false),
+    readdir(ReadDir::ENUM::POSIX),
+    readdirplus(false),
+    rename_exdev(RenameEXDEV::ENUM::PASSTHROUGH),
+    security_capability(true),
+    srcmounts(branches),
+    statfs(StatFS::ENUM::BASE),
+    statfs_ignore(StatFSIgnore::ENUM::NONE),
+    symlinkify(false),
+    symlinkify_timeout(3600),
+    threads(0),
+    version(MERGERFS_VERSION),
+    writeback_cache(false),
+    xattr(XAttr::ENUM::PASSTHROUGH)
 {
   _map["async_read"]           = &async_read;
   _map["auto_cache"]           = &auto_cache;
@@ -120,6 +127,7 @@ Config::Config()
   _map["category.search"]      = &category.search;
   _map["direct_io"]            = &direct_io;
   _map["dropcacheonclose"]     = &dropcacheonclose;
+  _map["follow-symlinks"]      = &follow_symlinks;
   _map["fsname"]               = &fsname;
   _map["func.access"]          = &func.access;
   _map["func.chmod"]           = &func.chmod;
@@ -146,6 +154,7 @@ Config::Config()
   _map["inodecalc"]            = &inodecalc;
   _map["kernel_cache"]         = &kernel_cache;
   _map["link_cow"]             = &link_cow;
+  _map["link-exdev"]           = &link_exdev;
   _map["minfreespace"]         = &minfreespace;
   _map["mount"]                = &mount;
   _map["moveonenospc"]         = &moveonenospc;
@@ -155,6 +164,7 @@ Config::Config()
   _map["posix_acl"]            = &posix_acl;
   //  _map["readdir"]              = &readdir;
   _map["readdirplus"]          = &readdirplus;
+  _map["rename-exdev"]         = &rename_exdev;
   _map["security_capability"]  = &security_capability;
   _map["srcmounts"]            = &srcmounts;
   _map["statfs"]               = &statfs;
@@ -166,17 +176,22 @@ Config::Config()
   _map["xattr"]                = &xattr;
 }
 
-const
 Config&
-Config::ro(void)
+Config::operator=(const Config &cfg_)
 {
-  return *((Config*)fuse_get_context()->private_data);
-}
+  int rv;
+  std::string val;
 
-Config&
-Config::rw(void)
-{
-  return *((Config*)fuse_get_context()->private_data);
+  for(auto &kv : _map)
+    {
+      rv = cfg_.get(kv.first,&val);
+      if(rv)
+        continue;
+
+      kv.second->from_string(val);
+    }
+
+  return *this;
 }
 
 bool
@@ -254,9 +269,78 @@ Config::set(const std::string &key_,
             const std::string &value_)
 {
   if(l::readonly(key_))
-    return -EINVAL;
+    return -EROFS;
 
   return set_raw(key_,value_);
+}
+
+int
+Config::set(const std::string &kv_)
+{
+  std::string key;
+  std::string val;
+
+  str::splitkv(kv_,'=',&key,&val);
+  key = str::trim(key);
+  val = str::trim(val);
+
+  return set(key,val);
+}
+
+int
+Config::from_stream(std::istream &istrm_,
+                    ErrVec       *errs_)
+{
+  int rv;
+  std::string line;
+  std::string key;
+  std::string val;
+  Config newcfg;
+
+  newcfg = *this;
+
+  while(std::getline(istrm_,line,'\n'))
+    {
+      line = str::trim(line);
+      if(!line.empty() && (line[0] == '#'))
+        continue;
+
+      str::splitkv(line,'=',&key,&val);
+      key = str::trim(key);
+      val = str::trim(val);
+
+      rv = newcfg.set(key,val);
+      if(rv < 0)
+        errs_->push_back({rv,key});
+    }
+
+  if(!errs_->empty())
+    return -EINVAL;
+
+  *this = newcfg;
+
+  return 0;
+}
+
+int
+Config::from_file(const std::string &filepath_,
+                  ErrVec            *errs_)
+{
+  int rv;
+  std::ifstream ifstrm;
+
+  ifstrm.open(filepath_);
+  if(!ifstrm.good())
+    {
+      errs_->push_back({-errno,filepath_});
+      return -errno;
+    }
+
+  rv = from_stream(ifstrm,errs_);
+
+  ifstrm.close();
+
+  return rv;
 }
 
 std::ostream&
@@ -268,7 +352,47 @@ operator<<(std::ostream &os_,
 
   for(i = c_._map.begin(), ei = c_._map.end(); i != ei; ++i)
     {
-      os_ << i->first << '=' << i->second << '\n';
+      os_ << i->first << '=' << i->second->to_string() << std::endl;
+    }
+
+  return os_;
+}
+
+
+static
+std::string
+err2str(const int err_)
+{
+  switch(err_)
+    {
+    case 0:
+      return std::string();
+    case -EINVAL:
+      return "invalid value";
+    case -ENOATTR:
+      return "unknown option";
+    case -EROFS:
+      return "read-only option";
+    default:
+      return strerror(-err_);
+    }
+
+  return std::string();
+}
+
+std::ostream&
+operator<<(std::ostream         &os_,
+           const Config::ErrVec &ev_)
+{
+  std::string errstr;
+
+  for(auto &err : ev_)
+    {
+      os_ << "* ERROR: ";
+      errstr = err2str(err.err);
+      if(!errstr.empty())
+        os_ << errstr << " - ";
+      os_ << err.str << std::endl;
     }
 
   return os_;

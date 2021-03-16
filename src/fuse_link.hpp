@@ -16,9 +16,14 @@
 
 #pragma once
 
+#include "fuse.h"
+
+
 namespace FUSE
 {
   int
-  link(const char *from,
-       const char *to);
+  link(const char      *oldpath,
+       const char      *newpath,
+       struct stat     *st,
+       fuse_timeouts_t *timeouts);
 }

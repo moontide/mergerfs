@@ -16,12 +16,13 @@
 
 #include "config.hpp"
 #include "errno.hpp"
-#include "fs_symlink.hpp"
 #include "fs_clonepath.hpp"
 #include "fs_path.hpp"
+#include "fs_symlink.hpp"
+#include "fuse_getattr.hpp"
 #include "ugid.hpp"
 
-#include <fuse.h>
+#include "fuse.h"
 
 #include <string>
 
@@ -29,7 +30,6 @@
 #include <unistd.h>
 
 using std::string;
-using std::vector;
 
 
 namespace error
@@ -57,27 +57,27 @@ namespace l
   static
   int
   symlink_loop_core(const string &newbasepath_,
-                    const char   *oldpath_,
-                    const char   *newpath_,
+                    const char   *target_,
+                    const char   *linkpath_,
                     const int     error_)
   {
     int rv;
     string fullnewpath;
 
-    fullnewpath = fs::path::make(newbasepath_,newpath_);
+    fullnewpath = fs::path::make(newbasepath_,linkpath_);
 
-    rv = fs::symlink(oldpath_,fullnewpath);
+    rv = fs::symlink(target_,fullnewpath);
 
     return error::calc(rv,error_,errno);
   }
 
   static
   int
-  symlink_loop(const string         &existingpath_,
-               const vector<string> &newbasepaths_,
-               const char           *oldpath_,
-               const char           *newpath_,
-               const string         &newdirpath_)
+  symlink_loop(const string &existingpath_,
+               const StrVec &newbasepaths_,
+               const char   *target_,
+               const char   *linkpath_,
+               const string &newdirpath_)
   {
     int rv;
     int error;
@@ -90,8 +90,8 @@ namespace l
           error = error::calc(rv,error,errno);
         else
           error = l::symlink_loop_core(newbasepaths_[i],
-                                       oldpath_,
-                                       newpath_,
+                                       target_,
+                                       linkpath_,
                                        error);
       }
 
@@ -100,18 +100,18 @@ namespace l
 
   static
   int
-  symlink(Policy::Func::Search  searchFunc_,
-          Policy::Func::Create  createFunc_,
+  symlink(const Policy::Search &searchFunc_,
+          const Policy::Create &createFunc_,
           const Branches       &branches_,
-          const char           *oldpath_,
-          const char           *newpath_)
+          const char           *target_,
+          const char           *linkpath_)
   {
     int rv;
     string newdirpath;
-    vector<string> newbasepaths;
-    vector<string> existingpaths;
+    StrVec newbasepaths;
+    StrVec existingpaths;
 
-    newdirpath = fs::path::dirname(newpath_);
+    newdirpath = fs::path::dirname(linkpath_);
 
     rv = searchFunc_(branches_,newdirpath,&existingpaths);
     if(rv == -1)
@@ -122,24 +122,39 @@ namespace l
       return -errno;
 
     return l::symlink_loop(existingpaths[0],newbasepaths,
-                           oldpath_,newpath_,newdirpath);
+                           target_,linkpath_,newdirpath);
   }
 }
 
 namespace FUSE
 {
   int
-  symlink(const char *oldpath_,
-          const char *newpath_)
+  symlink(const char *target_,
+          const char *linkpath_)
   {
-    const fuse_context *fc     = fuse_get_context();
-    const Config       &config = Config::ro();
+    Config::Read cfg;
+    const fuse_context *fc  = fuse_get_context();
     const ugid::Set     ugid(fc->uid,fc->gid);
 
-    return l::symlink(config.func.getattr.policy,
-                      config.func.symlink.policy,
-                      config.branches,
-                      oldpath_,
-                      newpath_);
+    return l::symlink(cfg->func.getattr.policy,
+                      cfg->func.symlink.policy,
+                      cfg->branches,
+                      target_,
+                      linkpath_);
+  }
+
+  int
+  symlink(const char      *target_,
+          const char      *linkpath_,
+          struct stat     *st_,
+          fuse_timeouts_t *timeout_)
+  {
+    int rv;
+
+    rv = FUSE::symlink(target_,linkpath_);
+    if(rv < 0)
+      return rv;
+
+    return FUSE::getattr(target_,st_,timeout_);
   }
 }
